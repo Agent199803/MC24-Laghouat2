@@ -6,6 +6,16 @@
     "orientation": "landscape",
     "android": {
       "package": "com.mc24laghouat.game"
-    }
+    },
+    "plugins": [
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "kotlinVersion": "1.9.25"
+          }
+        }
+      ]
+    ]
   }
 }
