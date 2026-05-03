@@ -6,171 +6,161 @@ import {
   TouchableOpacity,
   TextInput,
   Alert,
-  Vibration
+  Vibration,
+  PanResponder
 } from "react-native";
-
 import TcpSocket from "react-native-tcp-socket";
-import { Audio } from "expo-av";
 
 const PORT = 2424;
 const FIELD_W = 760;
 const FIELD_H = 430;
-
-const TEAM_A_COLOR = "#e53935";
-const TEAM_B_COLOR = "#1e88e5";
-
-const PLAYER_SIZE = 48;
-const BALL_SIZE = 28;
+const PLAYER = 48;
+const BALL = 28;
+const TEAM_A = "#e53935";
+const TEAM_B = "#1e88e5";
 
 export default function App() {
   const [screen, setScreen] = useState("menu");
   const [isHost, setIsHost] = useState(false);
+  const [status, setStatus] = useState("Offline");
 
-  const [roomName, setRoomName] = useState("Room-1");
+  const [roomName, setRoomName] = useState("MC24 Room");
   const [playerName, setPlayerName] = useState("Player");
   const [team, setTeam] = useState("A");
   const [teamAName, setTeamAName] = useState("MC24");
   const [teamBName, setTeamBName] = useState("Guest");
   const [hostIp, setHostIp] = useState("");
-  const [status, setStatus] = useState("Offline");
-
-  const [ping, setPing] = useState(0);
-  const pingStartRef = useRef(0);
-
-  const [goalFlash, setGoalFlash] = useState("");
-  const [aiEnabled, setAiEnabled] = useState(true);
-
-  const [joy, setJoy] = useState({ dx: 0, dy: 0 });
 
   const [scoreA, setScoreA] = useState(0);
   const [scoreB, setScoreB] = useState(0);
+  const [ping, setPing] = useState(0);
+  const [goalFlash, setGoalFlash] = useState("");
+  const [netShake, setNetShake] = useState(0);
 
   const [players, setPlayers] = useState({});
   const [me, setMe] = useState({
     id: String(Date.now()),
+    name: "Player",
+    team: "A",
     x: 120,
     y: 210,
-    team: "A",
-    name: "Player"
+    vx: 0,
+    vy: 0
   });
 
   const [ball, setBall] = useState({
     x: 370,
     y: 210,
     vx: 0,
-    vy: 0
+    vy: 0,
+    spin: 0
   });
+
+  const [joy, setJoy] = useState({ x: 0, y: 0 });
 
   const serverRef = useRef(null);
   const clientsRef = useRef([]);
   const socketRef = useRef(null);
-
-  const meRef = useRef(me);
-  const ballRef = useRef(ball);
   const playersRef = useRef(players);
+  const ballRef = useRef(ball);
+  const meRef = useRef(me);
+  const bufferRef = useRef({});
+  const lastPingRef = useRef(0);
 
-  useEffect(() => {
-    meRef.current = me;
-  }, [me]);
+  useEffect(() => { playersRef.current = players; }, [players]);
+  useEffect(() => { ballRef.current = ball; }, [ball]);
+  useEffect(() => { meRef.current = me; }, [me]);
 
-  useEffect(() => {
-    ballRef.current = ball;
-  }, [ball]);
-
-  useEffect(() => {
-    playersRef.current = players;
-  }, [players]);
-
-  function playerColor(pTeam) {
-    return pTeam === "A" ? TEAM_A_COLOR : TEAM_B_COLOR;
+  function colorOf(t) {
+    return t === "A" ? TEAM_A : TEAM_B;
   }
 
-  async function playBeep() {
-    try {
-      Vibration.vibrate(60);
-      await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
-    } catch {}
+  function effect(type) {
+    if (type === "kick") Vibration.vibrate(25);
+    if (type === "goal") Vibration.vibrate([0, 90, 50, 120]);
   }
 
   function sendAll(data) {
     const msg = JSON.stringify(data) + "\n";
-    clientsRef.current.forEach(socket => {
-      try {
-        socket.write(msg);
-      } catch {}
+    clientsRef.current.forEach(s => {
+      try { s.write(msg); } catch {}
     });
   }
 
-  function sendToHost(data) {
+  function sendHost(data) {
     if (!socketRef.current) return;
-    try {
-      socketRef.current.write(JSON.stringify(data) + "\n");
-    } catch {}
+    try { socketRef.current.write(JSON.stringify(data) + "\n"); } catch {}
   }
 
-  function broadcastState(nextBall, a, b, nextPlayers = playersRef.current) {
+  function broadcast(ballData, a, b, p = playersRef.current) {
     sendAll({
       type: "state",
+      t: Date.now(),
       roomName,
-      ball: nextBall,
+      ball: ballData,
       scoreA: a,
       scoreB: b,
-      players: nextPlayers,
+      players: p,
       teamAName,
       teamBName
     });
   }
 
-  function showGoal(text) {
-    setGoalFlash(text);
-    playBeep();
-    setTimeout(() => setGoalFlash(""), 1300);
-  }
-
   function startHost() {
     try {
-      const startX = team === "A" ? 120 : 620;
-      const nextMe = {
-        ...meRef.current,
-        name: playerName,
-        team,
-        x: startX,
-        y: 210
-      };
-
-      const aiBot = {
+      const start = team === "A" ? 120 : 620;
+      const mine = { ...meRef.current, name: playerName, team, x: start, y: 210 };
+      const ai = {
         id: "AI_BOT",
         name: "AI",
         team: team === "A" ? "B" : "A",
         x: team === "A" ? 620 : 120,
         y: 210,
+        vx: 0,
+        vy: 0,
         ai: true
       };
 
-      const initialPlayers = aiEnabled
-        ? { [nextMe.id]: nextMe, [aiBot.id]: aiBot }
-        : { [nextMe.id]: nextMe };
-
-      setMe(nextMe);
-      setPlayers(initialPlayers);
+      const initial = { [mine.id]: mine, AI_BOT: ai };
       setIsHost(true);
+      setMe(mine);
+      setPlayers(initial);
 
       const server = TcpSocket.createServer(socket => {
         clientsRef.current.push(socket);
 
         socket.on("data", data => {
-          const messages = data.toString().split("\n").filter(Boolean);
-
-          messages.forEach(raw => {
+          data.toString().split("\n").filter(Boolean).forEach(raw => {
             try {
               const msg = JSON.parse(raw);
 
               if (msg.type === "join" || msg.type === "move") {
                 setPlayers(prev => {
                   const updated = { ...prev, [msg.player.id]: msg.player };
-                  broadcastState(ballRef.current, scoreA, scoreB, updated);
+                  playersRef.current = updated;
+                  broadcast(ballRef.current, scoreA, scoreB, updated);
                   return updated;
                 });
+              }
+
+              if (msg.type === "kick") {
+                const p = msg.player;
+                const b = ballRef.current;
+                const dx = b.x - p.x;
+                const dy = b.y - p.y;
+                const d = Math.sqrt(dx * dx + dy * dy) || 1;
+                if (d < 95) {
+                  const kicked = {
+                    ...b,
+                    vx: (dx / d) * 16,
+                    vy: (dy / d) * 16,
+                    spin: Math.max(-5, Math.min(5, (p.vx || 0) * 0.7))
+                  };
+                  setBall(kicked);
+                  ballRef.current = kicked;
+                  effect("kick");
+                  broadcast(kicked, scoreA, scoreB);
+                }
               }
 
               if (msg.type === "ping") {
@@ -186,7 +176,7 @@ export default function App() {
       });
 
       server.listen({ port: PORT, host: "0.0.0.0" }, () => {
-        setStatus("Host ready | Port " + PORT);
+        setStatus("HOST | Port " + PORT);
         setScreen("game");
       });
 
@@ -198,42 +188,39 @@ export default function App() {
 
   function joinHost() {
     try {
-      const startX = team === "A" ? 160 : 600;
-      const nextMe = {
-        ...meRef.current,
-        name: playerName,
-        team,
-        x: startX,
-        y: 210
-      };
+      const start = team === "A" ? 160 : 600;
+      const mine = { ...meRef.current, name: playerName, team, x: start, y: 210 };
 
-      setMe(nextMe);
       setIsHost(false);
+      setMe(mine);
 
-      const socket = TcpSocket.createConnection(
-        { port: PORT, host: hostIp },
-        () => {
-          socketRef.current = socket;
-          setStatus("Connected");
-          setScreen("game");
-          sendToHost({ type: "join", player: nextMe });
-        }
-      );
+      const socket = TcpSocket.createConnection({ port: PORT, host: hostIp }, () => {
+        socketRef.current = socket;
+        setStatus("Connected");
+        setScreen("game");
+        sendHost({ type: "join", player: mine });
+      });
 
       socket.on("data", data => {
-        const messages = data.toString().split("\n").filter(Boolean);
-
-        messages.forEach(raw => {
+        data.toString().split("\n").filter(Boolean).forEach(raw => {
           try {
             const msg = JSON.parse(raw);
 
             if (msg.type === "state") {
-              setPlayers(msg.players || {});
               setBall(msg.ball);
               setScoreA(msg.scoreA);
               setScoreB(msg.scoreB);
               if (msg.teamAName) setTeamAName(msg.teamAName);
               if (msg.teamBName) setTeamBName(msg.teamBName);
+
+              Object.values(msg.players || {}).forEach(p => {
+                if (p.id === meRef.current.id) return;
+                if (!bufferRef.current[p.id]) bufferRef.current[p.id] = [];
+                bufferRef.current[p.id].push({ ...p, t: Date.now() });
+                if (bufferRef.current[p.id].length > 5) bufferRef.current[p.id].shift();
+              });
+
+              setPlayers(prev => ({ ...prev, ...msg.players }));
             }
 
             if (msg.type === "pong") {
@@ -243,159 +230,155 @@ export default function App() {
         });
       });
 
-      socket.on("error", e => {
-        Alert.alert("Connection error", String(e));
-      });
+      socket.on("error", e => Alert.alert("Connection error", String(e)));
     } catch (e) {
       Alert.alert("Join error", String(e));
     }
   }
 
-  function kick() {
-    const p = meRef.current;
-    const b = ballRef.current;
+  function playerBallCollision(p, b) {
     const dx = b.x - p.x;
     const dy = b.y - p.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
+    const d = Math.sqrt(dx * dx + dy * dy) || 1;
 
-    if (dist < 85) {
-      const safe = dist || 1;
-      const kickedBall = {
-        ...b,
-        vx: (dx / safe) * 15,
-        vy: (dy / safe) * 15
-      };
-
-      if (isHost) {
-        setBall(kickedBall);
-        broadcastState(kickedBall, scoreA, scoreB);
-      } else {
-        sendToHost({ type: "kick", player: p });
-      }
-
-      playBeep();
-    }
-  }
-
-  function hitBallWithPlayer(p, currentBall) {
-    const dx = currentBall.x - p.x;
-    const dy = currentBall.y - p.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-
-    if (dist < 58) {
-      const safe = dist || 1;
+    if (d < 56) {
+      const nx = dx / d;
+      const ny = dy / d;
       return {
-        ...currentBall,
-        vx: (dx / safe) * 8.5,
-        vy: (dy / safe) * 8.5
+        ...b,
+        x: p.x + nx * 56,
+        y: p.y + ny * 56,
+        vx: nx * 9.8 + (p.vx || 0) * 0.35,
+        vy: ny * 9.8 + (p.vy || 0) * 0.35,
+        spin: Math.max(-6, Math.min(6, (p.vx || 0) * 0.45))
       };
     }
-
-    return currentBall;
+    return b;
   }
 
-  function moveAi(playersMap, currentBall) {
-    if (!playersMap.AI_BOT) return playersMap;
+  function moveAI(map, b) {
+    const ai = map.AI_BOT;
+    if (!ai) return map;
 
-    const ai = playersMap.AI_BOT;
-    const targetX = currentBall.x;
-    const targetY = currentBall.y;
+    const dx = b.x - ai.x;
+    const dy = b.y - ai.y;
+    const d = Math.sqrt(dx * dx + dy * dy) || 1;
+    const speed = 4.6;
 
-    const dx = targetX - ai.x;
-    const dy = targetY - ai.y;
-    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-
-    const speed = 3.2;
-
-    const nextAi = {
+    const next = {
       ...ai,
-      x: Math.max(10, Math.min(FIELD_W - 60, ai.x + (dx / dist) * speed)),
-      y: Math.max(60, Math.min(FIELD_H - 60, ai.y + (dy / dist) * speed))
+      vx: (dx / d) * speed,
+      vy: (dy / d) * speed,
+      x: Math.max(10, Math.min(FIELD_W - 60, ai.x + (dx / d) * speed)),
+      y: Math.max(60, Math.min(FIELD_H - 60, ai.y + (dy / d) * speed))
     };
 
-    return { ...playersMap, AI_BOT: nextAi };
+    return { ...map, AI_BOT: next };
+  }
+
+  function goal(text) {
+    setGoalFlash(text);
+    setNetShake(1);
+    effect("goal");
+    setTimeout(() => setNetShake(0), 450);
+    setTimeout(() => setGoalFlash(""), 1300);
   }
 
   useEffect(() => {
     if (screen !== "game" || !isHost) return;
 
     const loop = setInterval(() => {
-      let updatedPlayers = playersRef.current;
+      let pMap = moveAI(playersRef.current, ballRef.current);
+      setPlayers(pMap);
+      playersRef.current = pMap;
 
-      if (aiEnabled) {
-        updatedPlayers = moveAi(updatedPlayers, ballRef.current);
-        setPlayers(updatedPlayers);
+      let b = ballRef.current;
+
+      b = {
+        x: b.x + b.vx,
+        y: b.y + b.vy + b.spin * 0.08,
+        vx: b.vx * 0.995,
+        vy: b.vy * 0.995,
+        spin: b.spin * 0.985
+      };
+
+      Object.values(pMap).forEach(p => {
+        b = playerBallCollision(p, b);
+      });
+
+      if (b.y < 45) {
+        b.y = 45;
+        b.vy *= -1;
+        b.spin *= 0.8;
       }
 
-      setBall(prev => {
-        let nextBall = {
-          x: prev.x + prev.vx,
-          y: prev.y + prev.vy,
-          vx: prev.vx * 0.992,
-          vy: prev.vy * 0.992
-        };
+      if (b.y > FIELD_H - BALL) {
+        b.y = FIELD_H - BALL;
+        b.vy *= -1;
+        b.spin *= 0.8;
+      }
 
-        Object.values(updatedPlayers).forEach(p => {
-          nextBall = hitBallWithPlayer(p, nextBall);
-        });
+      if (b.x < -5) {
+        const ns = scoreB + 1;
+        const reset = { x: 370, y: 210, vx: 0, vy: 0, spin: 0 };
+        setScoreB(ns);
+        setBall(reset);
+        ballRef.current = reset;
+        broadcast(reset, scoreA, ns, pMap);
+        goal("GOAL " + teamBName);
+        return;
+      }
 
-        if (nextBall.y < 45 || nextBall.y > FIELD_H - BALL_SIZE) {
-          nextBall.vy *= -1;
-        }
+      if (b.x > FIELD_W + 5) {
+        const ns = scoreA + 1;
+        const reset = { x: 370, y: 210, vx: 0, vy: 0, spin: 0 };
+        setScoreA(ns);
+        setBall(reset);
+        ballRef.current = reset;
+        broadcast(reset, ns, scoreB, pMap);
+        goal("GOAL " + teamAName);
+        return;
+      }
 
-        if (nextBall.x < 0) {
-          const newScoreB = scoreB + 1;
-          const reset = { x: 370, y: 210, vx: 0, vy: 0 };
-
-          setScoreB(newScoreB);
-          broadcastState(reset, scoreA, newScoreB, updatedPlayers);
-          showGoal("GOAL " + teamBName);
-          return reset;
-        }
-
-        if (nextBall.x > FIELD_W) {
-          const newScoreA = scoreA + 1;
-          const reset = { x: 370, y: 210, vx: 0, vy: 0 };
-
-          setScoreA(newScoreA);
-          broadcastState(reset, newScoreA, scoreB, updatedPlayers);
-          showGoal("GOAL " + teamAName);
-          return reset;
-        }
-
-        broadcastState(nextBall, scoreA, scoreB, updatedPlayers);
-        return nextBall;
-      });
+      setBall(b);
+      ballRef.current = b;
+      broadcast(b, scoreA, scoreB, pMap);
     }, 16);
 
     return () => clearInterval(loop);
-  }, [screen, isHost, scoreA, scoreB, aiEnabled]);
+  }, [screen, isHost, scoreA, scoreB]);
 
   useEffect(() => {
     if (screen !== "game" || isHost) return;
 
-    const pinger = setInterval(() => {
+    const loop = setInterval(() => {
       const now = Date.now();
-      pingStartRef.current = now;
-      sendToHost({ type: "ping", t: now });
-    }, 1200);
+      if (now - lastPingRef.current > 1200) {
+        lastPingRef.current = now;
+        sendHost({ type: "ping", t: now });
+      }
+    }, 200);
 
-    return () => clearInterval(pinger);
+    return () => clearInterval(loop);
   }, [screen, isHost]);
 
   useEffect(() => {
     if (screen !== "game") return;
 
-    const moveLoop = setInterval(() => {
-      if (joy.dx === 0 && joy.dy === 0) return;
+    const loop = setInterval(() => {
+      const cur = meRef.current;
+      const speed = 6.8;
 
-      const current = meRef.current;
+      if (Math.abs(joy.x) < 0.05 && Math.abs(joy.y) < 0.05) return;
+
       const next = {
-        ...current,
+        ...cur,
         name: playerName,
         team,
-        x: Math.max(10, Math.min(FIELD_W - 60, current.x + joy.dx * 5.5)),
-        y: Math.max(60, Math.min(FIELD_H - 60, current.y + joy.dy * 5.5))
+        vx: joy.x * speed,
+        vy: joy.y * speed,
+        x: Math.max(10, Math.min(FIELD_W - 60, cur.x + joy.x * speed)),
+        y: Math.max(60, Math.min(FIELD_H - 60, cur.y + joy.y * speed))
       };
 
       setMe(next);
@@ -408,71 +391,92 @@ export default function App() {
       });
 
       if (isHost) {
-        broadcastState(ballRef.current, scoreA, scoreB, {
+        broadcast(ballRef.current, scoreA, scoreB, {
           ...playersRef.current,
           [next.id]: next
         });
       } else {
-        sendToHost({ type: "move", player: next });
+        sendHost({ type: "move", player: next });
       }
     }, 16);
 
-    return () => clearInterval(moveLoop);
+    return () => clearInterval(loop);
   }, [screen, joy, isHost, scoreA, scoreB, playerName, team]);
+
+  const joyResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: (_, g) => updateJoy(g.dx, g.dy),
+      onPanResponderMove: (_, g) => updateJoy(g.dx, g.dy),
+      onPanResponderRelease: () => setJoy({ x: 0, y: 0 })
+    })
+  ).current;
+
+  function updateJoy(dx, dy) {
+    const max = 45;
+    const d = Math.sqrt(dx * dx + dy * dy) || 1;
+    const m = Math.min(1, d / max);
+    setJoy({
+      x: (dx / d) * m,
+      y: (dy / d) * m
+    });
+  }
+
+  function kick() {
+    const p = meRef.current;
+    const b = ballRef.current;
+    const dx = b.x - p.x;
+    const dy = b.y - p.y;
+    const d = Math.sqrt(dx * dx + dy * dy) || 1;
+
+    if (d > 95) return;
+
+    const kicked = {
+      ...b,
+      vx: (dx / d) * 17 + p.vx * 0.3,
+      vy: (dy / d) * 17 + p.vy * 0.3,
+      spin: Math.max(-7, Math.min(7, p.vx * 0.55))
+    };
+
+    effect("kick");
+
+    if (isHost) {
+      setBall(kicked);
+      ballRef.current = kicked;
+      broadcast(kicked, scoreA, scoreB);
+    } else {
+      sendHost({ type: "kick", player: p });
+    }
+  }
 
   if (screen === "menu") {
     return (
       <View style={styles.menu}>
-        <Text style={styles.title}>MC24 Laghouat</Text>
+        <Text style={styles.title}>MC24 Laghouat PRO</Text>
 
-        <View style={styles.roomBox}>
-          <TextInput
-            style={styles.input}
-            value={roomName}
-            onChangeText={setRoomName}
-            placeholder="Room name"
-            placeholderTextColor="#777"
-          />
-        </View>
-
-        <View style={styles.row}>
-          <TouchableOpacity
-            style={[styles.teamBtn, team === "A" && styles.teamAActive]}
-            onPress={() => setTeam("A")}
-          >
-            <Text style={styles.buttonText}>Team A</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.teamBtn, team === "B" && styles.teamBActive]}
-            onPress={() => setTeam("B")}
-          >
-            <Text style={styles.buttonText}>Team B</Text>
-          </TouchableOpacity>
-        </View>
-
+        <TextInput style={styles.input} value={roomName} onChangeText={setRoomName} placeholder="Room name" />
         <TextInput style={styles.input} value={playerName} onChangeText={setPlayerName} placeholder="Player name" />
         <TextInput style={styles.input} value={teamAName} onChangeText={setTeamAName} placeholder="Team A name" />
         <TextInput style={styles.input} value={teamBName} onChangeText={setTeamBName} placeholder="Team B name" />
 
-        <TouchableOpacity style={styles.aiBtn} onPress={() => setAiEnabled(!aiEnabled)}>
-          <Text style={styles.buttonText}>AI Bot: {aiEnabled ? "ON" : "OFF"}</Text>
-        </TouchableOpacity>
+        <View style={styles.row}>
+          <TouchableOpacity style={[styles.teamBtn, team === "A" && styles.a]} onPress={() => setTeam("A")}>
+            <Text style={styles.btnText}>TEAM A</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.teamBtn, team === "B" && styles.b]} onPress={() => setTeam("B")}>
+            <Text style={styles.btnText}>TEAM B</Text>
+          </TouchableOpacity>
+        </View>
 
         <TouchableOpacity style={styles.button} onPress={startHost}>
-          <Text style={styles.buttonText}>Create Room / Host</Text>
+          <Text style={styles.btnText}>Create Room</Text>
         </TouchableOpacity>
 
-        <TextInput
-          style={styles.input}
-          value={hostIp}
-          onChangeText={setHostIp}
-          placeholder="Host IP مثل 192.168.43.1"
-          placeholderTextColor="#777"
-        />
+        <TextInput style={styles.input} value={hostIp} onChangeText={setHostIp} placeholder="Host IP مثل 192.168.43.1" />
 
         <TouchableOpacity style={styles.button} onPress={joinHost}>
-          <Text style={styles.buttonText}>Join Room</Text>
+          <Text style={styles.btnText}>Join Room</Text>
         </TouchableOpacity>
 
         <Text style={styles.status}>{status}</Text>
@@ -486,16 +490,14 @@ export default function App() {
         {roomName} | {teamAName} {scoreA} - {scoreB} {teamBName}
       </Text>
 
-      <Text style={styles.ping}>
-        {isHost ? "HOST" : `PING ${ping}ms`}
-      </Text>
+      <Text style={styles.ping}>{isHost ? "HOST" : `PING ${ping}ms`}</Text>
 
       <View style={styles.centerLine} />
       <View style={styles.centerCircle} />
-      <View style={styles.goalLeft} />
-      <View style={styles.goalRight} />
+      <View style={[styles.goalLeft, netShake ? styles.netShake : null]} />
+      <View style={[styles.goalRight, netShake ? styles.netShake : null]} />
 
-      <View style={[styles.ball, { left: ball.x, top: ball.y }]} />
+      <View style={[styles.ball, { left: ball.x, top: ball.y, transform: [{ rotate: `${ball.spin * 12}deg` }] }]} />
 
       {Object.values(players).map(p => (
         <View
@@ -505,14 +507,12 @@ export default function App() {
             {
               left: p.x,
               top: p.y,
-              backgroundColor: playerColor(p.team),
-              opacity: p.ai ? 0.75 : 1
+              backgroundColor: colorOf(p.team),
+              opacity: p.ai ? 0.72 : 1
             }
           ]}
         >
-          <Text style={styles.playerText}>
-            {(p.name || "P").slice(0, 2).toUpperCase()}
-          </Text>
+          <Text style={styles.playerText}>{(p.name || "P").slice(0, 2).toUpperCase()}</Text>
         </View>
       ))}
 
@@ -522,254 +522,53 @@ export default function App() {
         </View>
       )}
 
-      <View style={styles.joystick}>
-        <TouchableOpacity onPressIn={() => setJoy({ dx: 0, dy: -1 })} onPressOut={() => setJoy({ dx: 0, dy: 0 })}>
-          <Text style={styles.joyBtn}>↑</Text>
-        </TouchableOpacity>
-
-        <View style={{ flexDirection: "row" }}>
-          <TouchableOpacity onPressIn={() => setJoy({ dx: -1, dy: 0 })} onPressOut={() => setJoy({ dx: 0, dy: 0 })}>
-            <Text style={styles.joyBtn}>←</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity onPress={kick}>
-            <Text style={styles.kickBtn}>KICK</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity onPressIn={() => setJoy({ dx: 1, dy: 0 })} onPressOut={() => setJoy({ dx: 0, dy: 0 })}>
-            <Text style={styles.joyBtn}>→</Text>
-          </TouchableOpacity>
-        </View>
-
-        <TouchableOpacity onPressIn={() => setJoy({ dx: 0, dy: 1 })} onPressOut={() => setJoy({ dx: 0, dy: 0 })}>
-          <Text style={styles.joyBtn}>↓</Text>
-        </TouchableOpacity>
+      <View style={styles.joyBase} {...joyResponder.panHandlers}>
+        <View
+          style={[
+            styles.joyStick,
+            { left: 42 + joy.x * 32, top: 42 + joy.y * 32 }
+          ]}
+        />
       </View>
 
-      <TouchableOpacity style={styles.backBtn} onPress={() => setScreen("menu")}>
-        <Text style={styles.buttonText}>Menu</Text>
+      <TouchableOpacity style={styles.kick} onPress={kick}>
+        <Text style={styles.kickText}>KICK</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity style={styles.back} onPress={() => setScreen("menu")}>
+        <Text style={styles.btnText}>Menu</Text>
       </TouchableOpacity>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  menu: {
-    flex: 1,
-    backgroundColor: "#123f25",
-    justifyContent: "center",
-    alignItems: "center"
-  },
-  title: {
-    color: "white",
-    fontSize: 36,
-    fontWeight: "bold",
-    marginBottom: 8
-  },
-  roomBox: {
-    marginBottom: 4
-  },
-  row: {
-    flexDirection: "row",
-    marginBottom: 6
-  },
-  teamBtn: {
-    width: 130,
-    backgroundColor: "#111",
-    padding: 11,
-    borderRadius: 14,
-    alignItems: "center",
-    marginHorizontal: 5,
-    borderWidth: 2,
-    borderColor: "#555"
-  },
-  teamAActive: {
-    backgroundColor: TEAM_A_COLOR,
-    borderColor: "white"
-  },
-  teamBActive: {
-    backgroundColor: TEAM_B_COLOR,
-    borderColor: "white"
-  },
-  input: {
-    width: 285,
-    backgroundColor: "white",
-    padding: 10,
-    borderRadius: 12,
-    marginVertical: 4
-  },
-  button: {
-    width: 285,
-    backgroundColor: "#111",
-    padding: 12,
-    borderRadius: 14,
-    alignItems: "center",
-    marginTop: 6
-  },
-  aiBtn: {
-    width: 285,
-    backgroundColor: "#444",
-    padding: 12,
-    borderRadius: 14,
-    alignItems: "center",
-    marginTop: 6
-  },
-  buttonText: {
-    color: "white",
-    fontWeight: "bold"
-  },
-  status: {
-    color: "white",
-    marginTop: 8
-  },
-  field: {
-    flex: 1,
-    backgroundColor: "#1f7a3d",
-    borderWidth: 4,
-    borderColor: "white"
-  },
-  score: {
-    position: "absolute",
-    top: 10,
-    alignSelf: "center",
-    color: "white",
-    fontSize: 18,
-    fontWeight: "bold",
-    zIndex: 10,
-    backgroundColor: "rgba(0,0,0,0.38)",
-    paddingHorizontal: 18,
-    paddingVertical: 5,
-    borderRadius: 10
-  },
-  ping: {
-    position: "absolute",
-    top: 12,
-    left: 12,
-    color: "white",
-    fontWeight: "bold",
-    zIndex: 20,
-    backgroundColor: "rgba(0,0,0,0.45)",
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 8
-  },
-  centerLine: {
-    position: "absolute",
-    left: "50%",
-    top: 0,
-    bottom: 0,
-    width: 2,
-    backgroundColor: "white",
-    opacity: 0.85
-  },
-  centerCircle: {
-    position: "absolute",
-    left: "50%",
-    top: "50%",
-    width: 130,
-    height: 130,
-    marginLeft: -65,
-    marginTop: -65,
-    borderRadius: 65,
-    borderWidth: 2,
-    borderColor: "white",
-    opacity: 0.85
-  },
-  goalLeft: {
-    position: "absolute",
-    left: 0,
-    top: "36%",
-    width: 14,
-    height: 125,
-    backgroundColor: "white"
-  },
-  goalRight: {
-    position: "absolute",
-    right: 0,
-    top: "36%",
-    width: 14,
-    height: 125,
-    backgroundColor: "white"
-  },
-  ball: {
-    position: "absolute",
-    width: BALL_SIZE,
-    height: BALL_SIZE,
-    borderRadius: BALL_SIZE / 2,
-    backgroundColor: "white",
-    borderWidth: 2,
-    borderColor: "#111",
-    zIndex: 4
-  },
-  player: {
-    position: "absolute",
-    width: PLAYER_SIZE,
-    height: PLAYER_SIZE,
-    borderRadius: PLAYER_SIZE / 2,
-    borderWidth: 2,
-    borderColor: "#111",
-    alignItems: "center",
-    justifyContent: "center",
-    zIndex: 5
-  },
-  playerText: {
-    color: "#111",
-    fontWeight: "bold"
-  },
-  goalFlash: {
-    position: "absolute",
-    top: "38%",
-    alignSelf: "center",
-    backgroundColor: "rgba(0,0,0,0.72)",
-    paddingHorizontal: 40,
-    paddingVertical: 18,
-    borderRadius: 18,
-    zIndex: 50
-  },
-  goalText: {
-    color: "white",
-    fontSize: 34,
-    fontWeight: "bold"
-  },
-  joystick: {
-    position: "absolute",
-    bottom: 18,
-    left: 18,
-    alignItems: "center",
-    zIndex: 30
-  },
-  joyBtn: {
-    backgroundColor: "#000",
-    color: "#fff",
-    fontSize: 22,
-    width: 46,
-    height: 40,
-    textAlign: "center",
-    paddingTop: 5,
-    margin: 4,
-    borderRadius: 10,
-    overflow: "hidden"
-  },
-  kickBtn: {
-    backgroundColor: "#fdd835",
-    color: "#111",
-    fontSize: 15,
-    fontWeight: "bold",
-    width: 70,
-    height: 40,
-    textAlign: "center",
-    paddingTop: 10,
-    margin: 4,
-    borderRadius: 10,
-    overflow: "hidden"
-  },
-  backBtn: {
-    position: "absolute",
-    right: 10,
-    bottom: 10,
-    backgroundColor: "#111",
-    padding: 10,
-    borderRadius: 10,
-    zIndex: 20
-  }
+  menu: { flex: 1, backgroundColor: "#123f25", justifyContent: "center", alignItems: "center" },
+  title: { color: "white", fontSize: 36, fontWeight: "bold", marginBottom: 10 },
+  input: { width: 290, backgroundColor: "white", padding: 10, borderRadius: 12, marginVertical: 4 },
+  row: { flexDirection: "row", marginVertical: 6 },
+  teamBtn: { width: 135, backgroundColor: "#111", padding: 12, borderRadius: 14, alignItems: "center", marginHorizontal: 5 },
+  a: { backgroundColor: TEAM_A },
+  b: { backgroundColor: TEAM_B },
+  button: { width: 290, backgroundColor: "#111", padding: 13, borderRadius: 14, alignItems: "center", marginTop: 6 },
+  btnText: { color: "white", fontWeight: "bold" },
+  status: { color: "white", marginTop: 8 },
+  field: { flex: 1, backgroundColor: "#1f7a3d", borderWidth: 4, borderColor: "white" },
+  score: { position: "absolute", top: 10, alignSelf: "center", color: "white", fontSize: 18, fontWeight: "bold", zIndex: 20, backgroundColor: "rgba(0,0,0,.4)", paddingHorizontal: 16, paddingVertical: 5, borderRadius: 10 },
+  ping: { position: "absolute", top: 12, left: 12, color: "white", fontWeight: "bold", zIndex: 20, backgroundColor: "rgba(0,0,0,.45)", padding: 8, borderRadius: 8 },
+  centerLine: { position: "absolute", left: "50%", top: 0, bottom: 0, width: 2, backgroundColor: "white", opacity: .8 },
+  centerCircle: { position: "absolute", left: "50%", top: "50%", width: 130, height: 130, marginLeft: -65, marginTop: -65, borderRadius: 65, borderWidth: 2, borderColor: "white", opacity: .8 },
+  goalLeft: { position: "absolute", left: 0, top: "35%", width: 16, height: 130, backgroundColor: "white" },
+  goalRight: { position: "absolute", right: 0, top: "35%", width: 16, height: 130, backgroundColor: "white" },
+  netShake: { width: 24, opacity: .85 },
+  ball: { position: "absolute", width: BALL, height: BALL, borderRadius: BALL / 2, backgroundColor: "white", borderWidth: 3, borderColor: "#111", zIndex: 5 },
+  player: { position: "absolute", width: PLAYER, height: PLAYER, borderRadius: PLAYER / 2, borderWidth: 2, borderColor: "#111", alignItems: "center", justifyContent: "center", zIndex: 6 },
+  playerText: { color: "#111", fontWeight: "bold" },
+  goalFlash: { position: "absolute", top: "37%", alignSelf: "center", backgroundColor: "rgba(0,0,0,.75)", paddingHorizontal: 42, paddingVertical: 18, borderRadius: 18, zIndex: 50 },
+  goalText: { color: "white", fontSize: 34, fontWeight: "bold" },
+  joyBase: { position: "absolute", left: 22, bottom: 22, width: 120, height: 120, borderRadius: 60, backgroundColor: "rgba(0,0,0,.35)", borderWidth: 2, borderColor: "rgba(255,255,255,.45)", zIndex: 30 },
+  joyStick: { position: "absolute", width: 36, height: 36, borderRadius: 18, backgroundColor: "white" },
+  kick: { position: "absolute", right: 38, bottom: 35, width: 86, height: 86, borderRadius: 43, backgroundColor: "#fdd835", justifyContent: "center", alignItems: "center", zIndex: 30, borderWidth: 3, borderColor: "#111" },
+  kickText: { color: "#111", fontWeight: "bold", fontSize: 16 },
+  back: { position: "absolute", right: 10, top: 10, backgroundColor: "#111", padding: 9, borderRadius: 9, zIndex: 40 }
 });
