@@ -12,7 +12,7 @@
     "expo-build-properties": "~0.13.3",
     "react": "18.3.1",
     "react-native": "0.76.3",
-    "react-native-bluetooth-classic": "^1.60.0"
+    "react-native-tcp-socket": "^6.4.1"
   },
   "devDependencies": {
     "eas-cli": "latest"
