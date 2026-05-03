@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -12,6 +12,8 @@ import {
 import TcpSocket from "react-native-tcp-socket";
 
 const PORT = 2424;
+const FIELD_W = 760;
+const FIELD_H = 430;
 
 export default function App() {
   const [screen, setScreen] = useState("menu");
@@ -20,17 +22,33 @@ export default function App() {
   const [hostIp, setHostIp] = useState("");
   const [status, setStatus] = useState("Offline");
 
+  const [scoreA, setScoreA] = useState(0);
+  const [scoreB, setScoreB] = useState(0);
+
   const [players, setPlayers] = useState({});
   const [me, setMe] = useState({
     id: String(Date.now()),
     x: 120,
-    y: 220,
+    y: 210,
     color: "#e53935"
+  });
+
+  const [ball, setBall] = useState({
+    x: 370,
+    y: 210,
+    vx: 0,
+    vy: 0
   });
 
   const serverRef = useRef(null);
   const clientsRef = useRef([]);
   const socketRef = useRef(null);
+  const last = useRef({ x: 120, y: 210 });
+  const ballRef = useRef(ball);
+
+  useEffect(() => {
+    ballRef.current = ball;
+  }, [ball]);
 
   function sendAll(data) {
     const msg = JSON.stringify(data) + "\n";
@@ -41,22 +59,59 @@ export default function App() {
     });
   }
 
+  function sendMove(nextMe) {
+    const msg = {
+      type: "move",
+      id: nextMe.id,
+      player: {
+        ...nextMe,
+        name: playerName,
+        team: teamName
+      }
+    };
+
+    if (socketRef.current) {
+      try {
+        socketRef.current.write(JSON.stringify(msg) + "\n");
+      } catch {}
+    }
+
+    sendAll(msg);
+  }
+
+  function sendBall(nextBall, a, b) {
+    const msg = {
+      type: "ball",
+      ball: nextBall,
+      scoreA: a,
+      scoreB: b
+    };
+
+    sendAll(msg);
+  }
+
   function startHost() {
     try {
       const server = TcpSocket.createServer(socket => {
         clientsRef.current.push(socket);
 
         socket.on("data", data => {
-          try {
-            const msg = JSON.parse(data.toString());
-            if (msg.type === "move") {
-              setPlayers(prev => ({
-                ...prev,
-                [msg.id]: msg.player
-              }));
-              sendAll(msg);
-            }
-          } catch {}
+          const messages = data.toString().split("\n").filter(Boolean);
+
+          messages.forEach(raw => {
+            try {
+              const msg = JSON.parse(raw);
+
+              if (msg.type === "move") {
+                setPlayers(prev => ({
+                  ...prev,
+                  [msg.id]: msg.player
+                }));
+
+                sendAll(msg);
+              }
+            } catch {}
+          });
         });
 
         socket.on("close", () => {
@@ -81,21 +136,32 @@ export default function App() {
         { port: PORT, host: hostIp },
         () => {
           socketRef.current = socket;
-          setStatus("Connected to host");
+          setStatus("Connected");
           setScreen("game");
         }
       );
 
       socket.on("data", data => {
-        try {
-          const msg = JSON.parse(data.toString());
-          if (msg.type === "move") {
-            setPlayers(prev => ({
-              ...prev,
-              [msg.id]: msg.player
-            }));
-          }
-        } catch {}
+        const messages = data.toString().split("\n").filter(Boolean);
+
+        messages.forEach(raw => {
+          try {
+            const msg = JSON.parse(raw);
+
+            if (msg.type === "move") {
+              setPlayers(prev => ({
+                ...prev,
+                [msg.id]: msg.player
+              }));
+            }
+
+            if (msg.type === "ball") {
+              setBall(msg.ball);
+              setScoreA(msg.scoreA);
+              setScoreB(msg.scoreB);
+            }
+          } catch {}
+        });
       });
 
       socket.on("error", e => {
@@ -106,27 +172,75 @@ export default function App() {
     }
   }
 
-  function sendMove(nextMe) {
-    const msg = {
-      type: "move",
-      id: nextMe.id,
-      player: {
-        ...nextMe,
-        name: playerName,
-        team: teamName
+  useEffect(() => {
+    if (screen !== "game") return;
+
+    const loop = setInterval(() => {
+      setBall(prev => {
+        let nx = prev.x + prev.vx;
+        let ny = prev.y + prev.vy;
+        let nvx = prev.vx * 0.985;
+        let nvy = prev.vy * 0.985;
+
+        if (ny < 40 || ny > FIELD_H) {
+          nvy *= -1;
+        }
+
+        let nextScoreA = scoreA;
+        let nextScoreB = scoreB;
+
+        if (nx < 0) {
+          nextScoreB += 1;
+          setScoreB(nextScoreB);
+          nx = 370;
+          ny = 210;
+          nvx = 0;
+          nvy = 0;
+        }
+
+        if (nx > FIELD_W) {
+          nextScoreA += 1;
+          setScoreA(nextScoreA);
+          nx = 370;
+          ny = 210;
+          nvx = 0;
+          nvy = 0;
+        }
+
+        const nextBall = { x: nx, y: ny, vx: nvx, vy: nvy };
+
+        if (serverRef.current) {
+          sendBall(nextBall, nextScoreA, nextScoreB);
+        }
+
+        return nextBall;
+      });
+    }, 30);
+
+    return () => clearInterval(loop);
+  }, [screen, scoreA, scoreB]);
+
+  function hitBall(px, py) {
+    const b = ballRef.current;
+    const dx = b.x - px;
+    const dy = b.y - py;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    if (dist < 55) {
+      const power = 0.22;
+      const nextBall = {
+        ...b,
+        vx: dx * power,
+        vy: dy * power
+      };
+
+      setBall(nextBall);
+
+      if (serverRef.current) {
+        sendBall(nextBall, scoreA, scoreB);
       }
-    };
-
-    if (socketRef.current) {
-      try {
-        socketRef.current.write(JSON.stringify(msg) + "\n");
-      } catch {}
     }
-
-    sendAll(msg);
   }
-
-  const last = useRef({ x: 120, y: 220 });
 
   const panResponder = useRef(
     PanResponder.create({
@@ -134,17 +248,18 @@ export default function App() {
       onPanResponderMove: (_, g) => {
         const next = {
           ...me,
-          x: Math.max(10, Math.min(720, last.current.x + g.dx)),
-          y: Math.max(40, Math.min(420, last.current.y + g.dy))
+          x: Math.max(10, Math.min(FIELD_W - 50, last.current.x + g.dx)),
+          y: Math.max(45, Math.min(FIELD_H - 40, last.current.y + g.dy))
         };
 
         setMe(next);
         sendMove(next);
+        hitBall(next.x, next.y);
       },
       onPanResponderRelease: (_, g) => {
         last.current = {
-          x: Math.max(10, Math.min(720, last.current.x + g.dx)),
-          y: Math.max(40, Math.min(420, last.current.y + g.dy))
+          x: Math.max(10, Math.min(FIELD_W - 50, last.current.x + g.dx)),
+          y: Math.max(45, Math.min(FIELD_H - 40, last.current.y + g.dy))
         };
       }
     })
@@ -191,11 +306,16 @@ export default function App() {
 
   return (
     <View style={styles.field}>
-      <Text style={styles.score}>{teamName} - WiFi Local</Text>
+      <Text style={styles.score}>
+        {teamName} {scoreA} - {scoreB} Guest
+      </Text>
 
       <View style={styles.centerLine} />
       <View style={styles.centerCircle} />
-      <View style={styles.ball} />
+      <View style={styles.goalLeft} />
+      <View style={styles.goalRight} />
+
+      <View style={[styles.ball, { left: ball.x, top: ball.y }]} />
 
       {Object.values(players).map(p => (
         <View
@@ -278,7 +398,8 @@ const styles = StyleSheet.create({
     alignSelf: "center",
     color: "white",
     fontSize: 20,
-    fontWeight: "bold"
+    fontWeight: "bold",
+    zIndex: 10
   },
   centerLine: {
     position: "absolute",
@@ -300,10 +421,24 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: "white"
   },
+  goalLeft: {
+    position: "absolute",
+    left: 0,
+    top: "38%",
+    width: 12,
+    height: 110,
+    backgroundColor: "white"
+  },
+  goalRight: {
+    position: "absolute",
+    right: 0,
+    top: "38%",
+    width: 12,
+    height: 110,
+    backgroundColor: "white"
+  },
   ball: {
     position: "absolute",
-    left: "50%",
-    top: "50%",
     width: 28,
     height: 28,
     borderRadius: 14,
