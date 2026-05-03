@@ -1,24 +1,55 @@
-import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import React, { useState } from "react";
+import { View, StyleSheet, PanResponder } from "react-native";
 
 export default function App() {
+  const [player, setPlayer] = useState({ x: 150, y: 300 });
+
+  const panResponder = PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    onPanResponderMove: (evt, gestureState) => {
+      setPlayer({
+        x: player.x + gestureState.dx,
+        y: player.y + gestureState.dy
+      });
+    }
+  });
+
   return (
-    <View style={styles.container}>
-      <Text style={styles.text}>MC24 Laghouat</Text>
+    <View style={styles.field}>
+      {/* اللاعب */}
+      <View
+        {...panResponder.panHandlers}
+        style={[
+          styles.player,
+          { left: player.x, top: player.y }
+        ]}
+      />
+
+      {/* الكرة */}
+      <View style={styles.ball} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  field: {
     flex: 1,
-    backgroundColor: '#1e783c',
-    alignItems: 'center',
-    justifyContent: 'center'
+    backgroundColor: "#1f7a3d"
   },
-  text: {
-    color: '#ffffff',
-    fontSize: 30,
-    fontWeight: 'bold'
+  player: {
+    position: "absolute",
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "red"
+  },
+  ball: {
+    position: "absolute",
+    width: 25,
+    height: 25,
+    borderRadius: 12.5,
+    backgroundColor: "white",
+    left: 180,
+    top: 300
   }
 });
