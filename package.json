@@ -2,10 +2,9 @@
   "name": "mc24-laghouat",
   "version": "1.0.0",
   "private": true,
-  "main": "node_modules/expo/AppEntry.js",
+  "main": "expo/AppEntry",
   "scripts": {
-    "start": "expo start",
-    "build:android": "eas build --platform android --profile preview"
+    "start": "expo start"
   },
   "dependencies": {
     "expo": "~52.0.0",
