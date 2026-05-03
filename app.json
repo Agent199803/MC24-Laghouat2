@@ -5,7 +5,15 @@
     "version": "1.0.0",
     "orientation": "landscape",
     "android": {
-      "package": "com.mc24laghouat.game"
+      "package": "com.mc24laghouat.game",
+      "permissions": [
+        "BLUETOOTH",
+        "BLUETOOTH_ADMIN",
+        "BLUETOOTH_SCAN",
+        "BLUETOOTH_CONNECT",
+        "BLUETOOTH_ADVERTISE",
+        "ACCESS_FINE_LOCATION"
+      ]
     },
     "plugins": [
       [
