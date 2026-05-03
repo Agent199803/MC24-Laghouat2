@@ -1,84 +1,154 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
   TextInput,
-  ScrollView,
-  Alert,
-  PermissionsAndroid,
-  Platform
+  PanResponder,
+  Alert
 } from "react-native";
 
-import RNBluetoothClassic from "react-native-bluetooth-classic";
+import TcpSocket from "react-native-tcp-socket";
+
+const PORT = 2424;
 
 export default function App() {
   const [screen, setScreen] = useState("menu");
   const [playerName, setPlayerName] = useState("Player");
   const [teamName, setTeamName] = useState("MC24");
-  const [color, setColor] = useState("#e53935");
-  const [devices, setDevices] = useState([]);
-  const [status, setStatus] = useState("Not connected");
+  const [hostIp, setHostIp] = useState("");
+  const [status, setStatus] = useState("Offline");
 
-  async function requestBluetoothPermissions() {
-    if (Platform.OS !== "android") return true;
+  const [players, setPlayers] = useState({});
+  const [me, setMe] = useState({
+    id: String(Date.now()),
+    x: 120,
+    y: 220,
+    color: "#e53935"
+  });
 
-    try {
-      const granted = await PermissionsAndroid.requestMultiple([
-        PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
-        PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
-        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
-      ]);
+  const serverRef = useRef(null);
+  const clientsRef = useRef([]);
+  const socketRef = useRef(null);
 
-      return Object.values(granted).every(
-        value => value === PermissionsAndroid.RESULTS.GRANTED
-      );
-    } catch (e) {
-      Alert.alert("Permission error", String(e));
-      return false;
-    }
+  function sendAll(data) {
+    const msg = JSON.stringify(data) + "\n";
+    clientsRef.current.forEach(s => {
+      try {
+        s.write(msg);
+      } catch {}
+    });
   }
 
-  async function loadDevices() {
-    const ok = await requestBluetoothPermissions();
-    if (!ok) {
-      Alert.alert("Bluetooth", "Permissions refused");
-      return;
-    }
-
+  function startHost() {
     try {
-      const enabled = await RNBluetoothClassic.isBluetoothEnabled();
+      const server = TcpSocket.createServer(socket => {
+        clientsRef.current.push(socket);
 
-      if (!enabled) {
-        Alert.alert("Bluetooth", "Please enable Bluetooth");
-        return;
-      }
+        socket.on("data", data => {
+          try {
+            const msg = JSON.parse(data.toString());
+            if (msg.type === "move") {
+              setPlayers(prev => ({
+                ...prev,
+                [msg.id]: msg.player
+              }));
+              sendAll(msg);
+            }
+          } catch {}
+        });
 
-      const paired = await RNBluetoothClassic.getBondedDevices();
-      setDevices(paired);
-      setScreen("devices");
-    } catch (e) {
-      Alert.alert("Bluetooth error", String(e));
-    }
-  }
+        socket.on("close", () => {
+          clientsRef.current = clientsRef.current.filter(s => s !== socket);
+        });
+      });
 
-  async function connectToDevice(device) {
-    try {
-      setStatus("Connecting...");
-      const connected = await device.connect();
-      if (connected) {
-        setStatus("Connected to " + device.name);
-        Alert.alert("Connected", device.name || device.address);
+      server.listen({ port: PORT, host: "0.0.0.0" }, () => {
+        setStatus("Host started - port " + PORT);
         setScreen("game");
-      } else {
-        setStatus("Connection failed");
-      }
+      });
+
+      serverRef.current = server;
     } catch (e) {
-      setStatus("Connection error");
-      Alert.alert("Connect error", String(e));
+      Alert.alert("Host error", String(e));
     }
   }
+
+  function joinHost() {
+    try {
+      const socket = TcpSocket.createConnection(
+        { port: PORT, host: hostIp },
+        () => {
+          socketRef.current = socket;
+          setStatus("Connected to host");
+          setScreen("game");
+        }
+      );
+
+      socket.on("data", data => {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg.type === "move") {
+            setPlayers(prev => ({
+              ...prev,
+              [msg.id]: msg.player
+            }));
+          }
+        } catch {}
+      });
+
+      socket.on("error", e => {
+        Alert.alert("Connection error", String(e));
+      });
+    } catch (e) {
+      Alert.alert("Join error", String(e));
+    }
+  }
+
+  function sendMove(nextMe) {
+    const msg = {
+      type: "move",
+      id: nextMe.id,
+      player: {
+        ...nextMe,
+        name: playerName,
+        team: teamName
+      }
+    };
+
+    if (socketRef.current) {
+      try {
+        socketRef.current.write(JSON.stringify(msg) + "\n");
+      } catch {}
+    }
+
+    sendAll(msg);
+  }
+
+  const last = useRef({ x: 120, y: 220 });
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onPanResponderMove: (_, g) => {
+        const next = {
+          ...me,
+          x: Math.max(10, Math.min(720, last.current.x + g.dx)),
+          y: Math.max(40, Math.min(420, last.current.y + g.dy))
+        };
+
+        setMe(next);
+        sendMove(next);
+      },
+      onPanResponderRelease: (_, g) => {
+        last.current = {
+          x: Math.max(10, Math.min(720, last.current.x + g.dx)),
+          y: Math.max(40, Math.min(420, last.current.y + g.dy))
+        };
+      }
+    })
+  ).current;
 
   if (screen === "menu") {
     return (
@@ -99,22 +169,19 @@ export default function App() {
           placeholder="Team name"
         />
 
-        <View style={styles.colors}>
-          {["#e53935", "#1e88e5", "#fdd835", "#8e24aa", "#ffffff"].map(c => (
-            <TouchableOpacity
-              key={c}
-              onPress={() => setColor(c)}
-              style={[styles.colorBtn, { backgroundColor: c }]}
-            />
-          ))}
-        </View>
-
-        <TouchableOpacity style={styles.button} onPress={() => setScreen("game")}>
-          <Text style={styles.buttonText}>Local Test Game</Text>
+        <TouchableOpacity style={styles.button} onPress={startHost}>
+          <Text style={styles.buttonText}>Create WiFi Match</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.button} onPress={loadDevices}>
-          <Text style={styles.buttonText}>Join by Bluetooth</Text>
+        <TextInput
+          style={styles.input}
+          value={hostIp}
+          onChangeText={setHostIp}
+          placeholder="Host IP مثل 192.168.43.1"
+        />
+
+        <TouchableOpacity style={styles.button} onPress={joinHost}>
+          <Text style={styles.buttonText}>Join WiFi Match</Text>
         </TouchableOpacity>
 
         <Text style={styles.status}>{status}</Text>
@@ -122,43 +189,35 @@ export default function App() {
     );
   }
 
-  if (screen === "devices") {
-    return (
-      <View style={styles.menu}>
-        <Text style={styles.title}>Bluetooth Devices</Text>
-
-        <ScrollView style={{ width: "80%" }}>
-          {devices.map((d, index) => (
-            <TouchableOpacity
-              key={index}
-              style={styles.device}
-              onPress={() => connectToDevice(d)}
-            >
-              <Text style={styles.deviceText}>{d.name || "Unknown device"}</Text>
-              <Text style={styles.deviceSub}>{d.address}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-
-        <TouchableOpacity style={styles.button} onPress={() => setScreen("menu")}>
-          <Text style={styles.buttonText}>Back</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
   return (
     <View style={styles.field}>
-      <Text style={styles.score}>{teamName} VS Guest</Text>
+      <Text style={styles.score}>{teamName} - WiFi Local</Text>
 
       <View style={styles.centerLine} />
       <View style={styles.centerCircle} />
-      <View style={styles.goalLeft} />
-      <View style={styles.goalRight} />
-
       <View style={styles.ball} />
 
-      <View style={[styles.player, { backgroundColor: color }]}>
+      {Object.values(players).map(p => (
+        <View
+          key={p.id}
+          style={[
+            styles.player,
+            { left: p.x, top: p.y, backgroundColor: p.color || "#1e88e5" }
+          ]}
+        >
+          <Text style={styles.playerText}>
+            {(p.name || "P").slice(0, 2).toUpperCase()}
+          </Text>
+        </View>
+      ))}
+
+      <View
+        {...panResponder.panHandlers}
+        style={[
+          styles.player,
+          { left: me.x, top: me.y, backgroundColor: me.color }
+        ]}
+      >
         <Text style={styles.playerText}>
           {playerName.slice(0, 2).toUpperCase()}
         </Text>
@@ -182,30 +241,18 @@ const styles = StyleSheet.create({
     color: "white",
     fontSize: 34,
     fontWeight: "bold",
-    marginBottom: 20
+    marginBottom: 18
   },
   input: {
-    width: 260,
+    width: 280,
     backgroundColor: "white",
     padding: 12,
     borderRadius: 12,
     marginVertical: 6
   },
-  colors: {
-    flexDirection: "row",
-    marginVertical: 12
-  },
-  colorBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    borderWidth: 2,
-    borderColor: "#111",
-    marginHorizontal: 6
-  },
   button: {
+    width: 280,
     backgroundColor: "#111",
-    width: 260,
     padding: 14,
     borderRadius: 14,
     alignItems: "center",
@@ -218,19 +265,6 @@ const styles = StyleSheet.create({
   status: {
     color: "white",
     marginTop: 12
-  },
-  device: {
-    backgroundColor: "white",
-    padding: 14,
-    borderRadius: 12,
-    marginVertical: 6
-  },
-  deviceText: {
-    fontWeight: "bold",
-    fontSize: 16
-  },
-  deviceSub: {
-    color: "#555"
   },
   field: {
     flex: 1,
@@ -266,22 +300,6 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: "white"
   },
-  goalLeft: {
-    position: "absolute",
-    left: 0,
-    top: "38%",
-    width: 12,
-    height: 110,
-    backgroundColor: "white"
-  },
-  goalRight: {
-    position: "absolute",
-    right: 0,
-    top: "38%",
-    width: 12,
-    height: 110,
-    backgroundColor: "white"
-  },
   ball: {
     position: "absolute",
     left: "50%",
@@ -295,8 +313,6 @@ const styles = StyleSheet.create({
   },
   player: {
     position: "absolute",
-    left: 120,
-    top: 220,
     width: 48,
     height: 48,
     borderRadius: 24,
@@ -306,8 +322,8 @@ const styles = StyleSheet.create({
     justifyContent: "center"
   },
   playerText: {
-    fontWeight: "bold",
-    color: "#111"
+    color: "#111",
+    fontWeight: "bold"
   },
   backBtn: {
     position: "absolute",
