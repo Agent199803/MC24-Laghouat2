@@ -1,70 +1,84 @@
-import React, { useRef, useState } from "react";
+import React, { useState } from "react";
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
   TextInput,
-  PanResponder
+  ScrollView,
+  Alert,
+  PermissionsAndroid,
+  Platform
 } from "react-native";
+
+import RNBluetoothClassic from "react-native-bluetooth-classic";
 
 export default function App() {
   const [screen, setScreen] = useState("menu");
   const [playerName, setPlayerName] = useState("Player");
   const [teamName, setTeamName] = useState("MC24");
   const [color, setColor] = useState("#e53935");
+  const [devices, setDevices] = useState([]);
+  const [status, setStatus] = useState("Not connected");
 
-  const [scoreA, setScoreA] = useState(0);
-  const [scoreB, setScoreB] = useState(0);
+  async function requestBluetoothPermissions() {
+    if (Platform.OS !== "android") return true;
 
-  const [player, setPlayer] = useState({ x: 120, y: 260 });
-  const [ball, setBall] = useState({ x: 370, y: 260 });
+    try {
+      const granted = await PermissionsAndroid.requestMultiple([
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
+      ]);
 
-  const last = useRef({ x: 120, y: 260 });
+      return Object.values(granted).every(
+        value => value === PermissionsAndroid.RESULTS.GRANTED
+      );
+    } catch (e) {
+      Alert.alert("Permission error", String(e));
+      return false;
+    }
+  }
 
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onPanResponderMove: (_, g) => {
-        const nx = Math.max(20, Math.min(700, last.current.x + g.dx));
-        const ny = Math.max(40, Math.min(460, last.current.y + g.dy));
+  async function loadDevices() {
+    const ok = await requestBluetoothPermissions();
+    if (!ok) {
+      Alert.alert("Bluetooth", "Permissions refused");
+      return;
+    }
 
-        setPlayer({ x: nx, y: ny });
+    try {
+      const enabled = await RNBluetoothClassic.isBluetoothEnabled();
 
-        const dx = ball.x - nx;
-        const dy = ball.y - ny;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-
-        if (dist < 48) {
-          let bx = ball.x + dx * 0.35;
-          let by = ball.y + dy * 0.35;
-
-          if (bx < 15) {
-            setScoreB(s => s + 1);
-            bx = 370;
-            by = 260;
-          }
-
-          if (bx > 725) {
-            setScoreA(s => s + 1);
-            bx = 370;
-            by = 260;
-          }
-
-          setBall({
-            x: Math.max(15, Math.min(725, bx)),
-            y: Math.max(35, Math.min(485, by))
-          });
-        }
-      },
-      onPanResponderRelease: (_, g) => {
-        last.current = {
-          x: Math.max(20, Math.min(700, last.current.x + g.dx)),
-          y: Math.max(40, Math.min(460, last.current.y + g.dy))
-        };
+      if (!enabled) {
+        Alert.alert("Bluetooth", "Please enable Bluetooth");
+        return;
       }
-    })
-  ).current;
+
+      const paired = await RNBluetoothClassic.getBondedDevices();
+      setDevices(paired);
+      setScreen("devices");
+    } catch (e) {
+      Alert.alert("Bluetooth error", String(e));
+    }
+  }
+
+  async function connectToDevice(device) {
+    try {
+      setStatus("Connecting...");
+      const connected = await device.connect();
+      if (connected) {
+        setStatus("Connected to " + device.name);
+        Alert.alert("Connected", device.name || device.address);
+        setScreen("game");
+      } else {
+        setStatus("Connection failed");
+      }
+    } catch (e) {
+      setStatus("Connection error");
+      Alert.alert("Connect error", String(e));
+    }
+  }
 
   if (screen === "menu") {
     return (
@@ -76,7 +90,6 @@ export default function App() {
           value={playerName}
           onChangeText={setPlayerName}
           placeholder="Player name"
-          placeholderTextColor="#aaa"
         />
 
         <TextInput
@@ -84,7 +97,6 @@ export default function App() {
           value={teamName}
           onChangeText={setTeamName}
           placeholder="Team name"
-          placeholderTextColor="#aaa"
         />
 
         <View style={styles.colors}>
@@ -98,11 +110,38 @@ export default function App() {
         </View>
 
         <TouchableOpacity style={styles.button} onPress={() => setScreen("game")}>
-          <Text style={styles.buttonText}>Start Local Game</Text>
+          <Text style={styles.buttonText}>Local Test Game</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.buttonDark}>
-          <Text style={styles.buttonText}>Bluetooth coming next</Text>
+        <TouchableOpacity style={styles.button} onPress={loadDevices}>
+          <Text style={styles.buttonText}>Join by Bluetooth</Text>
+        </TouchableOpacity>
+
+        <Text style={styles.status}>{status}</Text>
+      </View>
+    );
+  }
+
+  if (screen === "devices") {
+    return (
+      <View style={styles.menu}>
+        <Text style={styles.title}>Bluetooth Devices</Text>
+
+        <ScrollView style={{ width: "80%" }}>
+          {devices.map((d, index) => (
+            <TouchableOpacity
+              key={index}
+              style={styles.device}
+              onPress={() => connectToDevice(d)}
+            >
+              <Text style={styles.deviceText}>{d.name || "Unknown device"}</Text>
+              <Text style={styles.deviceSub}>{d.address}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+
+        <TouchableOpacity style={styles.button} onPress={() => setScreen("menu")}>
+          <Text style={styles.buttonText}>Back</Text>
         </TouchableOpacity>
       </View>
     );
@@ -110,23 +149,24 @@ export default function App() {
 
   return (
     <View style={styles.field}>
-      <View style={styles.score}>
-        <Text style={styles.scoreText}>{teamName} {scoreA} - {scoreB} Guest</Text>
-      </View>
+      <Text style={styles.score}>{teamName} VS Guest</Text>
 
       <View style={styles.centerLine} />
       <View style={styles.centerCircle} />
       <View style={styles.goalLeft} />
       <View style={styles.goalRight} />
 
-      <View style={[styles.ball, { left: ball.x, top: ball.y }]} />
+      <View style={styles.ball} />
 
-      <View
-        {...panResponder.panHandlers}
-        style={[styles.player, { left: player.x, top: player.y, backgroundColor: color }]}
-      >
-        <Text style={styles.playerText}>{playerName.slice(0, 2).toUpperCase()}</Text>
+      <View style={[styles.player, { backgroundColor: color }]}>
+        <Text style={styles.playerText}>
+          {playerName.slice(0, 2).toUpperCase()}
+        </Text>
       </View>
+
+      <TouchableOpacity style={styles.backBtn} onPress={() => setScreen("menu")}>
+        <Text style={styles.buttonText}>Menu</Text>
+      </TouchableOpacity>
     </View>
   );
 }
@@ -140,49 +180,57 @@ const styles = StyleSheet.create({
   },
   title: {
     color: "white",
-    fontSize: 36,
+    fontSize: 34,
     fontWeight: "bold",
-    marginBottom: 25
+    marginBottom: 20
   },
   input: {
     width: 260,
     backgroundColor: "white",
-    borderRadius: 12,
     padding: 12,
-    marginVertical: 6,
-    fontSize: 16
+    borderRadius: 12,
+    marginVertical: 6
   },
   colors: {
     flexDirection: "row",
-    marginVertical: 15
+    marginVertical: 12
   },
   colorBtn: {
     width: 36,
     height: 36,
     borderRadius: 18,
-    marginHorizontal: 6,
     borderWidth: 2,
-    borderColor: "#111"
+    borderColor: "#111",
+    marginHorizontal: 6
   },
   button: {
-    width: 260,
-    padding: 14,
-    borderRadius: 14,
     backgroundColor: "#111",
-    alignItems: "center",
-    marginTop: 8
-  },
-  buttonDark: {
     width: 260,
     padding: 14,
     borderRadius: 14,
-    backgroundColor: "#444",
     alignItems: "center",
     marginTop: 8
   },
   buttonText: {
     color: "white",
     fontWeight: "bold"
+  },
+  status: {
+    color: "white",
+    marginTop: 12
+  },
+  device: {
+    backgroundColor: "white",
+    padding: 14,
+    borderRadius: 12,
+    marginVertical: 6
+  },
+  deviceText: {
+    fontWeight: "bold",
+    fontSize: 16
+  },
+  deviceSub: {
+    color: "#555"
   },
   field: {
     flex: 1,
@@ -194,16 +242,9 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: 10,
     alignSelf: "center",
-    backgroundColor: "rgba(0,0,0,0.4)",
-    paddingHorizontal: 18,
-    paddingVertical: 6,
-    borderRadius: 10,
-    zIndex: 5
-  },
-  scoreText: {
     color: "white",
-    fontWeight: "bold",
-    fontSize: 18
+    fontSize: 20,
+    fontWeight: "bold"
   },
   centerLine: {
     position: "absolute",
@@ -211,8 +252,7 @@ const styles = StyleSheet.create({
     top: 0,
     bottom: 0,
     width: 2,
-    backgroundColor: "white",
-    opacity: 0.8
+    backgroundColor: "white"
   },
   centerCircle: {
     position: "absolute",
@@ -230,7 +270,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     left: 0,
     top: "38%",
-    width: 10,
+    width: 12,
     height: 110,
     backgroundColor: "white"
   },
@@ -238,31 +278,43 @@ const styles = StyleSheet.create({
     position: "absolute",
     right: 0,
     top: "38%",
-    width: 10,
+    width: 12,
     height: 110,
     backgroundColor: "white"
   },
-  player: {
-    position: "absolute",
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    borderWidth: 2,
-    borderColor: "#111",
-    alignItems: "center",
-    justifyContent: "center"
-  },
-  playerText: {
-    color: "#111",
-    fontWeight: "bold"
-  },
   ball: {
     position: "absolute",
+    left: "50%",
+    top: "50%",
     width: 28,
     height: 28,
     borderRadius: 14,
     backgroundColor: "white",
     borderWidth: 2,
     borderColor: "#111"
+  },
+  player: {
+    position: "absolute",
+    left: 120,
+    top: 220,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 2,
+    borderColor: "#111",
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  playerText: {
+    fontWeight: "bold",
+    color: "#111"
+  },
+  backBtn: {
+    position: "absolute",
+    right: 10,
+    bottom: 10,
+    backgroundColor: "#111",
+    padding: 10,
+    borderRadius: 10
   }
 });
